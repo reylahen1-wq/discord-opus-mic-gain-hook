@@ -1,0 +1,44 @@
+name: build
+
+# собирает при пуше тега vX.Y.Z и по кнопке (Run workflow)
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build\hookdll.dll, build\injector.exe `
+            -DestinationPath FreeHook.zip -Force
+
+      # всегда кладём артефакт (качается со страницы Actions)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeHook
+          path: |
+            build/hookdll.dll
+            build/injector.exe
+
+      # релиз только когда пушнули тег
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/hookdll.dll
+            build/injector.exe
+            FreeHook.zip

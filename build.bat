@@ -1,10 +1,17 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
+rem явный путь (правь под себя), иначе ищем студию через vswhere
 set "VCVARS=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
 if not exist "%VCVARS%" (
-    echo [!] vcvars64.bat not found: %VCVARS%
-    echo     edit build.bat and point VCVARS to your Visual Studio install.
+    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    if exist "!VSWHERE!" (
+        for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+        if defined VSPATH set "VCVARS=!VSPATH!\VC\Auxiliary\Build\vcvars64.bat"
+    )
+)
+if not exist "%VCVARS%" (
+    echo [!] vcvars64.bat not found, install VS Build Tools or set VCVARS in build.bat
     exit /b 1
 )
 call "%VCVARS%" >nul
