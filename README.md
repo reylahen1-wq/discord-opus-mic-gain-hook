@@ -3,6 +3,10 @@
 Хук микрофона для Discord: крутилка усиления (gain), и всё. Открытый исходник.
 **created by madect**
 
+<p align="center">
+  <img src="HookGUI.png" alt="FreeHook GUI" width="380">
+</p>
+
 ## Что это
 
 DLL цепляется к функции кодирования голоса в `discord_voice.node` и домножает
