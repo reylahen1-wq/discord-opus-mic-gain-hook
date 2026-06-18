@@ -66,3 +66,7 @@ build.bat
 2. Запусти `injector.exe`.
 3. Окно **FreeHook** появится поверх Discord. **Insert** — скрыть/показать,
    **X** — снять хук и выгрузить DLL.
+
+## Контакты
+
+Discord — **madect**
