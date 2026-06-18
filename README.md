@@ -1,17 +1,36 @@
 # FreeHook — Discord Opus Mic Gain Hook
 
+Discord microphone gain / loud mic hook for Windows — boost your mic volume
+before Opus encoding.
+
 Хук микрофона для Discord: крутилка усиления (gain), и всё. Открытый исходник.
 **created by madect**
 
 <p align="center">
-  <img src="HookGUI.png" alt="FreeHook GUI" width="380">
+  <img src="HookGUI.png" alt="FreeHook — Discord mic gain hook GUI" width="380">
 </p>
 
 ## Что это
 
-DLL цепляется к функции кодирования голоса в `discord_voice.node` и домножает
-твой PCM на коэффициент **до** Opus — тебя слышат громче, обработка на твоей
-стороне.
+FreeHook — лёгкий **Discord mic gain hook** для Windows. DLL цепляется к функции
+кодирования голоса (Opus) в `discord_voice.node` и домножает твой PCM на
+коэффициент усиления **до** энкодера — тебя слышат громче, обработка идёт на
+твоей стороне (microphone booster / loud mic).
+
+## Возможности (Features)
+
+- **Mic gain / усиление микрофона** 1x – 16x с пресетами.
+- Обработка **до Opus-энкода** (`WebRtcOpus_Encode_wrapper`) — чистый буст.
+- Лёгкий **ImGui-оверлей** поверх окна Discord (topmost, без иконки в taskbar).
+- Поиск функции по **RVA + сигнатуре (AOB)** — переживает смену версии Discord.
+- **Чистая выгрузка** DLL по крестику — всё возвращается как было.
+- Без лимитера: громкость крутишь сам.
+
+## Скачать (Download)
+
+Готовые `injector.exe` и `hookdll.dll` — на странице
+[**Releases**](https://github.com/Mad-code33/discord-opus-mic-gain-hook/releases/latest).
+Собирать ничего не нужно — скачал и запустил.
 
 ## Как работает
 
@@ -48,7 +67,7 @@ WebRtcOpus_Encode_wrapper
 RVA версионно-зависим: если не сошлось — работает скан по сигнатуре; если
 пролог поменялся, обнови байты под свою версию `discord_voice.node`.
 
-## Сборка
+## Сборка (Build / Installation)
 
 Visual Studio Build Tools (MSVC + Windows SDK), путь к `vcvars64.bat` —
 переменная `VCVARS` в `build.bat`.
@@ -60,7 +79,7 @@ build.bat
 
 Выход: `build\hookdll.dll`, `build\injector.exe`.
 
-## Запуск
+## Запуск (Usage)
 
 1. Открой Discord и зайди в голосовой канал.
 2. Запусти `injector.exe`.
