@@ -5,13 +5,15 @@
 
 Encode_t g_orig_encode = nullptr;
 extern "C" volatile float g_gain     = 1.0f;
-extern "C" volatile LONG  g_inflight = 0;
+static volatile LONG g_inflight = 0;   // сколько потоков сейчас внутри хука
 bool g_hookActive = false;
 
 namespace {
 
-// WebRtcOpus_Encode_wrapper в discord_voice.node, первые 16 байт пролога
-constexpr uintptr_t kEncodeRva = 0x713280;
+// WebRtcOpus_Encode_wrapper в discord_voice.node, первые 16 байт пролога.
+// RVA под Discord stable 1.0.9262 (9255-9261: 0x7950a0, canary 1234: 0x854340).
+// Не сошлось — срабатывает скан по сигнатуре (пролог уникален в модуле).
+constexpr uintptr_t kEncodeRva = 0x8492b0;
 const uint8_t kPrologue[16] = {
     0x56, 0x57, 0x48, 0x83, 0xEC, 0x28, 0xBF, 0xFF,
     0xFF, 0xFF, 0xFF, 0x49, 0x81, 0xF8, 0x80, 0x16
@@ -28,8 +30,17 @@ bool BytesEq(uintptr_t a, const uint8_t* p, size_t n) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// если по rva не сошлось (другая версия дискорда) — ищем по сигнатуре
-uintptr_t Scan(HMODULE m, const uint8_t* p, size_t n) {
+uintptr_t Resolve(HMODULE m) {
+    uintptr_t a = (uintptr_t)m + kEncodeRva;
+    if (BytesEq(a, kPrologue, sizeof kPrologue)) return a;
+    return Scan(m, kPrologue, nullptr, sizeof kPrologue);
+}
+
+}  // namespace
+
+// если по rva не сошлось (другая версия дискорда) — ищем по сигнатуре.
+// mask[k] == 0 — байт любой; mask == nullptr — точное совпадение
+uintptr_t Scan(HMODULE m, const uint8_t* p, const uint8_t* mask, size_t n) {
     __try {
         auto* dos = (IMAGE_DOS_HEADER*)m;
         auto* nt  = (IMAGE_NT_HEADERS64*)((uint8_t*)m + dos->e_lfanew);
@@ -37,7 +48,9 @@ uintptr_t Scan(HMODULE m, const uint8_t* p, size_t n) {
         size_t size = nt->OptionalHeader.SizeOfImage;
         uintptr_t hit = 0;
         for (size_t i = 0; i + n <= size; ++i) {
-            if (base[i] == p[0] && memcmp(base + i, p, n) == 0) {
+            size_t k = 0;
+            while (k < n && (base[i + k] == p[k] || (mask && !mask[k]))) ++k;
+            if (k == n) {
                 if (hit) return 0;   // не уникально — не рискуем
                 hit = (uintptr_t)(base + i);
             }
@@ -46,20 +59,42 @@ uintptr_t Scan(HMODULE m, const uint8_t* p, size_t n) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-uintptr_t Resolve(HMODULE m) {
-    uintptr_t a = (uintptr_t)m + kEncodeRva;
-    if (BytesEq(a, kPrologue, sizeof kPrologue)) return a;
-    return Scan(m, kPrologue, sizeof kPrologue);
+// lea r64,[rip+disp32] на строку s (с нулём) — адрес инструкции. Для
+// неэкспортных функций: якорь — строка лога/ключа, RVA не нужен
+uint8_t* FindLeaTo(HMODULE m, const char* s) {
+    __try {
+        auto* nt = (IMAGE_NT_HEADERS64*)((uint8_t*)m + ((IMAGE_DOS_HEADER*)m)->e_lfanew);
+        uint8_t* base = (uint8_t*)m;
+        const size_t size = nt->OptionalHeader.SizeOfImage, n = strlen(s) + 1;
+        uint8_t* str = nullptr;
+        for (size_t i = 0; i + n <= size && !str; ++i) {
+            if (base[i] == (uint8_t)s[0] && memcmp(base + i, s, n) == 0) str = base + i;
+        }
+        if (!str) return nullptr;
+        for (size_t i = 0; i + 7 <= size; ++i) {
+            uint8_t* p = base + i;
+            if ((p[0] == 0x48 || p[0] == 0x4C) && p[1] == 0x8D && (p[2] & 0xC7) == 0x05 &&
+                p + 7 + *(int32_t*)(p + 3) == str) return p;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return nullptr;
 }
 
-}  // namespace
+// начало функции по .pdata (кусок-продолжение даст свой старт — проверяй пролог)
+uint8_t* FuncStart(uint8_t* pc) {
+    DWORD64 ib = 0;
+    auto* rf = RtlLookupFunctionEntry((DWORD64)pc, &ib, nullptr);
+    return rf ? (uint8_t*)(ib + rf->BeginAddress) : nullptr;
+}
 
 // перед энкодом множим pcm на гейн, жёстко клампим в int16
 int __fastcall Hooked_Encode(void* inst, int16_t* pcm, uint64_t spc,
                              int maxb, uint8_t* out) {
     InterlockedIncrement(&g_inflight);
 
-    uint64_t ch = 2;
+    // каналы не прочитались (сменилась структура) — pcm не трогаем,
+    // иначе угаданное 2 при моно-буфере пишет за его конец
+    uint64_t ch = 0;
     if (inst) {
         __try {
             uint64_t c = *(uint64_t*)((uint8_t*)inst + 0x10);
@@ -68,7 +103,7 @@ int __fastcall Hooked_Encode(void* inst, int16_t* pcm, uint64_t spc,
     }
 
     const float g = g_gain;
-    if (pcm && g != 1.0f) {
+    if (pcm && ch && g != 1.0f) {
         const uint64_t n = spc * ch;
         for (uint64_t i = 0; i < n; ++i) {
             pcm[i] = ClampI16((int32_t)(pcm[i] * g));
@@ -100,6 +135,8 @@ bool InstallHook() {
         MH_Uninitialize();
         return false;
     }
+    InstallFilterHooks(voice);   // по возможности; критичен только энкодер
+    InitPatches(voice);          // только резолв, пишет gui по чекбоксу
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         MH_Uninitialize();
         return false;
@@ -108,9 +145,18 @@ bool InstallHook() {
     return true;
 }
 
-void UninstallHook() {
-    if (!g_hookActive) return;
-    MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();   // возвращает оригинальные байты функции
+// true — можно выгружать dll
+bool UninstallHook() {
+    if (!g_hookActive) return true;
+    MH_DisableHook(MH_ALL_HOOKS);   // новые вызовы идут сразу в оригинал
     g_hookActive = false;
+
+    // трамплин (g_orig_encode) и код хука должны пережить тех, кто уже внутри
+    for (int i = 0; i < 400 && g_inflight > 0; ++i) Sleep(5);
+    if (g_inflight > 0) return false;   // кто-то завис — лучше утечь, чем уронить дискорд
+    // ponytail: sleep закрывает пару инструкций вне счётчика (вход/выход хука);
+    // строгий вариант — счётчик в asm-стабе, если когда-то реально упадёт
+    Sleep(50);
+    MH_Uninitialize();   // освобождает трамплин
+    return true;
 }
