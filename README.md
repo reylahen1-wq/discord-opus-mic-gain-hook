@@ -36,8 +36,9 @@ FreeHook — лёгкий **Discord mic gain hook** для Windows. DLL цепл
   - Opus в режиме **AUDIO** вместо VOIP (энкодер без голосовой обработки).
   Attenuation и Opus AUDIO — со следующего захода в войс.
 - **Stereo / HQ** (чекбокс): stereo-патчи накатываются **в памяти** — стерео в
-  SDP, всегда 48k. Файл на диске не трогаем, снимается чекбоксом и при
-  выгрузке. Подробнее — [ниже](#stereo--hq-в-freehook).
+  SDP, всегда 48k. Плюс Opus на максимум: complexity 10, fullband, без DTX.
+  Файл на диске не трогаем, снимается чекбоксом и при выгрузке. Подробнее —
+  [ниже](#stereo--hq-в-freehook).
 - Лёгкий **ImGui-оверлей** поверх окна Discord (topmost, без иконки в taskbar).
 - Поиск энкодера по **RVA + сигнатуре (AOB)** — переживает смену версии Discord.
 - **Чистая выгрузка** DLL по крестику — всё возвращается как было.
@@ -303,6 +304,12 @@ SdpToConfig  "stereo"    75 → EB              (jne → jmp)
 SdpToConfig  48k         44 0F 42 F0 → 90×4   (cmovb → nop)
 ```
 
+Плюс хуки opus-обёрток (не патч байт, `hookcore.cpp`), пока галка стоит:
+`WebRtcOpus_SetComplexity` → 10, `WebRtcOpus_SetBandwidth` → 1105 (fullband),
+`WebRtcOpus_EnableDtx` → вместо него `DisableDtx`. Ищутся по прологу + ctl
+(`mov edx, 0FAAh / 0FA8h / 0FB0h`). Дискорд зовёт их при создании энкодера, так
+что тоже со следующего захода в войс. В GUI (подсказка) — сколько из 3 нашлось.
+
 - Сигнатуры нет или она не уникальна — сайт пропускается (`n/a` в GUI).
 - Там не оригинал (уже пропатчено на диске) — не трогаем (`disk` в GUI). На
   этом stable все 3 уже на диске, чекбокс там ничего не меняет.
@@ -481,6 +488,144 @@ WebRTC-Audio-Allocation / -PriorityBitrate  min/max битрейт аудио в
 
 Не проверено вживую, что UpdateFieldTrial доходит до того же `FieldTrialsView`,
 который получает APM.
+
+## Аудио-карта (stable 1.0.9261 / 1.0.9262, canary 1.0.1234)
+
+RVA функций по всему пути мик → энкодер (и немного приёма). Колонка «якорь» —
+как найти функцию в следующей версии: строка (`lea` на неё → начало функции по
+.pdata), сигнатура из `patches.cpp`/`hookcore.cpp` или вызов. Все RVA 9262/1234
+найдены по этим якорям, а колонка 9261 сверена с IDA (совпала с известными).
+
+### Захват (мик → APM → отправка)
+
+```
+функция                                   9261      9262      c1234     якорь
+EngineAudioTransport::RecordedDataIsAvailable
+  (int16 с устройства → AudioFrame)       0x13b850  0x13cb20  0x13dfd0  единственный caller CapturedAudioProcessor::Process
+EngineAudioTransport::OnLoopbackFrame     0x13c4f0  0x13d7b0  0x13ec60  "EngineAudioTransport::OnLoopbackFrame residue: "
+CapturedAudioProcessor::Process
+  (Krisp → APM ProcessStream, гейт)       0xe9050   0xf3960   0xf4290   сигнатура APM gate (patches.cpp)
+CapturedAudioProcessor: статы/NC/AEC лог  0xe9380   0xf3f90   0xf48b0   "Audio frame samples: "
+krisp NoiseCanceller::Process (+ соседняя) 0xcc740   0xd2e90   0xd3600   "Noise cancellation failed"
+                                          0xccb30   0xd3110   0xd3880
+APM::ProcessStream(int16*, StreamConfig)  0x4314e0  0x458bc0  0x462e10  "AudioProcessing::ProcessStream_StreamConfig"
+APM::ProcessStream(AudioFrame*)           0x432e50  0x45a530  0x464780  "AudioProcessing::ProcessStream_AudioFrame"
+APM::ApplyConfig                          0x430970  0x458050  0x4622a0  "AudioProcessing::ApplyConfig: "
+AudioProcessingImpl ctor (field trials)   0x42db00  0x4551e0  0x45f430  "WebRTC-ApmEnforce48kHzProcessingRate"
+APM Config::ToString                      0x5f9940  0x66be10  0x67f580  "AudioProcessing::Config{ pipeline: ..."
+webrtc::HighPassFilter::Process           0x5fa7c0  0x66cc90  0x680400  сигнатура HPF (patches.cpp)
+AudioSendStream::SendAudioData            0x4540f0  0x47b710  0x485960  "AudioSendStream::SendAudioData"
+ChannelSend::ProcessAndEncodeAudio        0x628180  0x69bd90  0x6af500  "ChannelSend::ProcessAndEncodeAudio"
+AudioEngine::SetMicVolume (воркер)        0x10fa00  0x11d480  0x11e860  maxss/minss → movss [rcx+63Ch]
+```
+
+### Opus (WebRTC-обёртка + libopus)
+
+```
+функция                                   9261      9262      c1234     якорь
+AudioEncoderOpusImpl::SdpToConfig         0x5ed180  0x6608a0  0x673bc0  сигнатура stereo (patches.cpp)
+  GetBitrateMultipliers                   0x5edbf0  0x661310  0x674630  "WebRTC-Audio-OpusBitrateMultipliers"
+  RecreateEncoderInstance                 0x5ee520  0x661c40  0x674f60  "0 == WebRtcOpus_EncoderCreate( &inst_, ..."
+  SetTargetBitrate / ApplyBitrate         0x5ef850  0x662f70  0x676290  "0 == WebRtcOpus_SetBitRate( inst_, GetMultipliedBitrate(..."
+  SetPacketLoss (2-я функция)             0x5eeb10  0x662230  0x675550  "0 == WebRtcOpus_SetPacketLossRate( inst_, ..."
+  SetForceChannels (num_channels_to_encode) 0x5ef220 0x662940 0x675c60  "0 == WebRtcOpus_SetForceChannels(inst_, num_channels_to_encode)"
+  bandwidth update                        0x5efe00  0x663520  0x676840  "0 == WebRtcOpus_SetBandwidth(inst_, *bandwidth)"
+  SetDtx / SetFec                         0x5eef60  0x662680  0x6759a0  "0 == WebRtcOpus_EnableDtx(inst_)"
+                                          0x5eeeb0  0x6625d0  0x6758f0  "0 == WebRtcOpus_EnableFec(inst_)"
+  лог target bitrate / overhead           0x5efa50  0x663170  0x676490  "AudioEncoderOpusImpl: Overhead unknown, ..."
+AudioEncoderMultiChannelOpusImpl::Recreate 0x5f1ff0 0x665710  0x678a30  "0 == WebRtcOpus_MultistreamEncoderCreate( ..."
+WebRtcOpus_EncoderCreate                  0x794e50  0x849060  0x8540f0  сигнатура opus AUDIO (patches.cpp)
+WebRtcOpus_MultistreamEncoderCreate       0x794f80  0x849190  0x854220  то же, 2-й хит
+WebRtcOpus_Encode (Encode_wrapper, gain)  0x7950a0  0x8492b0  0x854340  пролог (hookcore.cpp)
+WebRtcOpus_SetBitRate         [ctl 4002]  0x795110  0x849320  0x8543b0  mov edx,0FA2h рядом с Encode_wrapper
+WebRtcOpus_SetPacketLossRate  [ctl 4014]  0x795160  0x849370  0x854400
+WebRtcOpus_SetMaxPlaybackRate [ctl 4004]  0x7951b0  0x8493c0  0x854450
+WebRtcOpus_Enable/DisableFec  [ctl 4012]  0x795230  0x849440  0x8544d0  / 0x795280 0x849490 0x854520
+WebRtcOpus_Enable/DisableDtx  [ctl 4016]  0x7952d0  0x8494e0  0x854570  / 0x795320 0x849530 0x8545c0
+WebRtcOpus_Enable/DisableCbr  [ctl 4006]  0x795400  0x849610  0x8546a0  / 0x795450 0x849660 0x8546f0
+WebRtcOpus_SetComplexity      [ctl 4010]  0x7954a0  0x8496b0  0x854740
+WebRtcOpus_SetBandwidth       [ctl 4008]  0x795580  0x849790  0x854820
+WebRtcOpus_SetForceChannels   [ctl 4022]  0x7955d0  0x8497e0  0x854870
+opus_encoder_create                       0x9ac8f0  0xa91e80  0xa9b450  call из WebRtcOpus_EncoderCreate
+opus_encode / opus_multistream_encode     0x9b1a40  0xa96fd0  0xaa05a0  call из Encode_wrapper
+                                          0x9b5a60  0xa9aff0  0xaa45c0
+opus_encode_native                        0x9ad230  0xa927c0  0xa9bd90  call из opus_encode; "opus_encoder.c"
+opus_encode_frame_native                  0x9aee40  0xa943d0  0xa9d9a0  сигнатура hp_cutoff (patches.cpp)
+opus_encoder_ctl                          0x9b1d20  0xa972b0  0xaa0880  самый частый call из WebRtcOpus_Set*
+```
+
+### Приём / воспроизведение
+
+```
+AudioTransportImpl::NeedMorePlayData      0x436180  0x45d7f0  0x467a40  "AudioTransportImpl::NeedMorePlayData"
+AudioTransportImpl resample (play/capture) 0x4363b0 0x45da20  0x467c70  "destination.data().size() == frame.num_channels_ * ..."
+ChannelReceive::GetAudioFrameWithInfo     0x48f1f0  0x4b6900  0x4c0b50  "ChannelReceive::GetAudioFrameWithInfo"
+```
+
+### Структуры
+
+```
+webrtc::AudioFrame (sizeof 0x3C60, одинаково во всех трёх)
+  +0x00 u32 timestamp          +0x08 i64 elapsed_time_ms   +0x10 i64 ntp_time_ms
+  +0x18 size_t samples_per_channel   +0x20 int sample_rate_hz   +0x28 size_t num_channels
+  +0x30 speech_type (4 = undefined)  +0x34 vad_activity (2 = unknown)
+  +0x38 optional<i64> absolute_capture_timestamp_ms
+  +0x48 int16 data[7680] (0x3C00 б, interleaved)        +0x3C48 bool muted
+  data() при muted отдаёт общий нулевой буфер; mutable_data() при muted чистит data.
+
+EngineAudioTransport (this у RecordedDataIsAvailable)
+  +0x7BF8 CapturedAudioProcessor*  (все три)
+  +0xFCD8 i64 счётчик захваченных кадров (все три)
+  синки кадра (AudioSendStream'ы), mutex / list:  9261 +0xFDD8 / +0xFE30,  9262 и c1234 +0xFE40 / +0xFE98
+  RecordedDataIsAvailable(this, u32 stream, const void* pcm, size_t samples, ...,
+                          u32 samples_per_sec, ...) — как webrtc::AudioTransport, плюс индекс потока
+
+CapturedAudioProcessor                       9261    9262 / c1234
+  Krisp NoiseCanceller*                      +0x68   +0x220
+  NC включён (bit0)                          +0x70   +0x228
+  NC: не звать Krisp на этом кадре (bit0)    +0x71   +0x229  (+0x22A, в c1234 и +0x22B — ещё флаги ветки)
+  AudioProcessing* (vtable +0x80 ProcessStream,
+    +0xB8 set_stream_delay_ms, +0xC8 set_stream_key_pressed)
+                                             +0xC8   +0x278
+  счётчик подряд-muted кадров (гейт > 9)      +0xD0   +0x280
+
+AudioEngine (то, куда Discord::Set* шлют таски)
+  +0x63C float mic volume (SetMicVolume, 0..1)   +0x2F0 mutex
+  +0x340 список, по которому воркер раскидывает новую громкость
+Discord (this экспортов): *this = impl; impl+0xA0 — очередь voice-потока (таски Set*),
+  impl+0xC8 — трейсер (если есть, таска оборачивается с именем функции)
+```
+
+### Полезные экспорты (по имени, RVA 9262 / c1234)
+
+```
+?StartRecordingRawSamples@Discord@@...       0x0b3b60 / 0x0b42d0  колбэк(vector<int16>, size_t, int) — сырой мик
+?StopRecordingRawSamples@Discord@@QEAAXXZ    0x0b40e0 / 0x0b4850
+?SetLocalVoiceLevelChangedCallback@Discord@@ 0x0adfd0 / 0x0ae740  колбэк(float level, u32) — уровень мика
+?SetLoopback@Discord@@QEAAX_N...             0x0b0910 / 0x0b1080  слышать себя (+ колбэк уровня)
+?SetMicVolume@Discord@@QEAAXM@Z              0x0acae0 / 0x0ad250
+?SetSpeakerVolume@Discord@@QEAAXM@Z          0x0ace00 / 0x0ad570
+?SetNoAudioInputThreshold@Discord@@QEAAXM@Z  0x0ad120 / 0x0ad890
+?SetSkipNoiseCancellationIfMuted@Discord@@   0x099c20 / 0x09a390
+?GetNoiseCancellationStats@Discord@@         0x099080 / 0x0997f0
+?SetEchoReferenceMode@Discord@@              0x098090 / 0x098800
+?SetVoiceChannelCountCap@Discord@@QEAAXI@Z   0x0ad760 / 0x0aded0
+?SetVoiceSampleRateCap@Discord@@QEAAXI@Z     0x0ad450 / 0x0adbc0
+?SetAudioMixerOptions@Discord@@              0x0af240 / 0x0af9b0
+?SetVoiceThreadPriority@Discord@@QEAAXH@Z    0x0b8d40 / 0x0b94b0
+?UpdateFieldTrial@Discord@@                  0x0b72d0 / 0x0b7a40
+?WriteAudioDebugState@Discord@@QEAAXXZ       0x0b35c0 / 0x0b3d30
+?GetSystemMicrophoneMode@Discord@@           0x0aa270 / 0x0aa9e0
+?SetUserPlayoutVolume@Connection@voice@discord@@...(id, float)  0x193ef0 / 0x196a50
+?SetUserPlayoutPan@Connection@voice@discord@@...(id, l, r)      0x193c20 / 0x196780
+?IsRemoteUserSpeaking@Connection@voice@discord@@                0x195a20 / 0x198580
+```
+
+Исходники (строки путей) для дальнейших поисков: `media/engine_audio_transport.cpp`,
+`media/captured_audio_processor.cpp`, `krisp/krisp_wrapper.cpp`,
+`krisp/voice_activity_detector.cpp`, `media/audio_engine.cpp`,
+`media/loopback_audio_stream.cpp`, `audio_samples_recorder.cpp`; ADM — на Rust
+(`discord_media/components/audio/interop/cpp/audio_device/rust_adm.cpp`).
 
 ## Сборка (Build / Installation)
 

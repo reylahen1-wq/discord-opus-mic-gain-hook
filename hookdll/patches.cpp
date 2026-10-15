@@ -71,6 +71,11 @@ size_t Hex(const char* s, uint8_t* b, uint8_t* m) {
 
 }  // namespace
 
+uintptr_t ScanSig(HMODULE m, const char* sig) {
+    uint8_t b[64], k[64];
+    return Scan(m, b, k, Hex(sig, b, k));
+}
+
 // пишем при замороженных остальных потоках (как MinHook): никто не исполнит
 // полузаписанную инструкцию и не стоит посреди переписываемых байт (nop×4)
 bool WriteCode(uint8_t* at, const uint8_t* b, size_t n) {

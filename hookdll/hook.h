@@ -12,6 +12,9 @@ extern "C" volatile float g_gain;
 // filterless: глушить NS/AGC/EC у Discord (пишет gui, читают фильтр-хуки)
 extern "C" volatile bool g_filterless;
 extern bool g_hookActive;
+// Stereo / HQ: opus complexity 10, fullband, без DTX (пишет gui, читают хуки обёрток)
+extern "C" volatile bool g_hq;
+int HqHooks();   // сколько opus-обёрток нашли и захукали (из 3)
 
 bool InstallHook();
 bool UninstallHook();   // false — кто-то ещё внутри хука, dll выгружать нельзя
@@ -30,6 +33,7 @@ void FilterCounts(int& stuck, int& seen, bool& apm, bool& attn);
 // patches.cpp: патчи кода в памяти
 enum { PATCH_STEREO, PATCH_FILTERLESS };
 bool WriteCode(uint8_t* at, const uint8_t* b, size_t n);
+uintptr_t ScanSig(HMODULE m, const char* sig);   // AOB-строка ("48 ?? 0F"), уникальный хит или 0
 void InitPatches(HMODULE voice);
 void SetPatches(int group, bool on);
 void PatchCounts(int group, int& on, int& disk, int& na);

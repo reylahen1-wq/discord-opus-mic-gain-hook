@@ -21,6 +21,10 @@ SET2 = ('?ApplySettings@Connection@voice@discord@@QEAAXAEBUConnectionSettings@3@
         'V?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z')
 EXPORTS = [SET2, '?ApplySettings@Connection@voice@discord@@QEAAXAEBUConnectionSettings@3@@Z',
            '?SetVoiceSampleRateCap@Discord@@QEAAXI@Z', '?SetDuckingPreference@Discord@@QEAAX_N@Z']
+core = open(os.path.join(os.path.dirname(__file__), '..', 'hookdll', 'hookcore.cpp'), encoding='utf-8').read()
+HQ_SIGS = re.findall(r'(kSig\w+)\[\]\s*=\s*"(48 83 EC 28 [0-9A-F? ]+)"', core)   # opus-обёртки Stereo/HQ
+assert len(HQ_SIGS) == 4, HQ_SIGS
+
 CFG_PRO = bytes.fromhex('41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC')
 ENC_PRO = bytes.fromhex('56 57 48 83 EC 28 BF FF FF FF FF 49 81 F8 80 16')   # kPrologue
 
@@ -112,6 +116,12 @@ for path in sys.argv[1:] or DEFAULT:
     ok = len(hits) == 1
     print(f'  {"ok" if ok else "FAIL":5} Encode_wrapper rva {hits[0] if ok else 0:#08x}')
     bad += not ok
+
+    for name, sig in HQ_SIGS:   # зеркало InstallHqHooks: уникальный хит = начало функции
+        hits = [m.start() for m in rx(sig).finditer(im.img)]
+        ok = len(hits) == 1 and im.func_start(hits[0]) == hits[0]
+        print(f'  {"ok" if ok else "FAIL":5} {name} rva {hits[0] if ok else 0:#08x}')
+        bad += not ok
 
     lea = im.lea_to('AudioProcessing::ApplyConfig: ')
     cfg = im.func_start(lea) if lea is not None else None

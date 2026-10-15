@@ -248,8 +248,13 @@ void RunGui() {
         if (g_filterless && !seen) ImGui::TextDisabled("rejoin voice / toggle a voice setting once");
 
         static bool stereo = false;
-        if (ImGui::Checkbox("Stereo / HQ", &stereo)) SetPatches(PATCH_STEREO, stereo);
-        ImGui::SetItemTooltip("stereo SDP, 48k (in memory)\nrejoin voice to apply");
+        if (ImGui::Checkbox("Stereo / HQ", &stereo)) {
+            SetPatches(PATCH_STEREO, stereo);
+            g_hq = stereo;
+        }
+        ImGui::SetItemTooltip("stereo SDP, 48k (in memory)\n"
+                              "opus complexity 10, fullband, no DTX: %d/3 hooked\n"
+                              "rejoin voice to apply", HqHooks());
         PatchCounts(PATCH_STEREO, on, disk, na);
         ImGui::SameLine();
         ImGui::TextDisabled("%d on  %d disk  %d n/a", on, disk, na);

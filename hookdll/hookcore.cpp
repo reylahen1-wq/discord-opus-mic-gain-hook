@@ -36,7 +36,41 @@ uintptr_t Resolve(HMODULE m) {
     return Scan(m, kPrologue, nullptr, sizeof kPrologue);
 }
 
+// --- Stereo / HQ: opus-энкодер на максимум ---
+// WebRtcOpus_SetComplexity / SetBandwidth / EnableDtx не экспорт: пролог +
+// ctl-иммедиат (README, «Аудио-карта»). Дискорд зовёт их при создании энкодера
+// (rejoin voice) и при адаптации — подменяем значение, пока включён HQ.
+// tools/sigcheck.py берёт сигнатуры отсюда: строки, начинающиеся с "48 83 EC 28"
+const char kSigCplx[]   = "48 83 EC 28 48 85 C9 74 ?? 41 89 D0 48 8B 01 48 85 C0 74 ?? 48 89 C1 BA AA 0F 00 00";
+const char kSigBw[]     = "48 83 EC 28 48 85 C9 74 ?? 41 89 D0 48 8B 01 48 85 C0 74 ?? 48 89 C1 BA A8 0F 00 00";
+const char kSigDtxOn[]  = "48 83 EC 28 48 85 C9 74 ?? 48 8B 01 48 85 C0 74 ?? 48 89 C1 BA B0 0F 00 00 41 B8 01 00 00 00";
+const char kSigDtxOff[] = "48 83 EC 28 48 85 C9 74 ?? 48 8B 01 48 85 C0 74 ?? 48 89 C1 BA B0 0F 00 00 45 31 C0";
+
+using Ctl1_t = int16_t (__fastcall*)(void* inst, int32_t v);
+using Ctl0_t = int16_t (__fastcall*)(void* inst);
+Ctl1_t o_cplx = nullptr, o_bw = nullptr;
+Ctl0_t o_dtxOn = nullptr, p_dtxOff = nullptr;
+int    g_hqHooks = 0;
+
+int16_t __fastcall h_cplx(void* i, int32_t v) { return o_cplx(i, g_hq ? 10 : v); }
+int16_t __fastcall h_bw(void* i, int32_t v)   { return o_bw(i, g_hq ? 1105 : v); }   // OPUS_BANDWIDTH_FULLBAND
+int16_t __fastcall h_dtx(void* i)             { return g_hq ? p_dtxOff(i) : o_dtxOn(i); }
+
+void InstallHqHooks(HMODULE m) {
+    auto hook = [m](const char* sig, void* det, void* orig) {
+        void* p = (void*)ScanSig(m, sig);
+        if (p && MH_CreateHook(p, det, (LPVOID*)orig) == MH_OK) ++g_hqHooks;
+    };
+    hook(kSigCplx, (void*)&h_cplx, &o_cplx);
+    hook(kSigBw, (void*)&h_bw, &o_bw);
+    p_dtxOff = (Ctl0_t)ScanSig(m, kSigDtxOff);
+    if (p_dtxOff) hook(kSigDtxOn, (void*)&h_dtx, &o_dtxOn);
+}
+
 }  // namespace
+
+extern "C" volatile bool g_hq = false;
+int HqHooks() { return g_hqHooks; }
 
 // если по rva не сошлось (другая версия дискорда) — ищем по сигнатуре.
 // mask[k] == 0 — байт любой; mask == nullptr — точное совпадение
@@ -136,6 +170,7 @@ bool InstallHook() {
         return false;
     }
     InstallFilterHooks(voice);   // по возможности; критичен только энкодер
+    InstallHqHooks(voice);
     InitPatches(voice);          // только резолв, пишет gui по чекбоксу
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         MH_Uninitialize();
